@@ -1,4 +1,5 @@
 import ee
+from rendvi.masking import Masking
 
 
 class Utils:
@@ -27,7 +28,7 @@ class Utils:
             "ndvi": img.select("ndvi")
         }).rename('ndvi')
         inRange = ndvi.gte(-1).And(ndvi.lte(1))
-        return ndvi.updateMask(infRange).set('system:time_start', img.get('system:time_start'))
+        return ndvi.updateMask(inRange).set('system:time_start', img.get('system:time_start'))
 
     # Function to rescale NDVI values from -1-1to 0-200
     @staticmethod
@@ -71,8 +72,46 @@ class Utils:
         out = ee.Algorithms.If(nBands.gt(0), img, ee.Image())
         return ee.Image(out).copyProperties(img, ['system:time_start'])
 
+    @staticmethod
+    def reduceQaToImages(coll, qaBand=None):
+        if qaBand:
+            coll = coll.select(qaBand)
 
-class Processing:
+        countImg = coll.map(lambda img: img.unmask(1)).count()
+
+        expanded = coll.map(Masking.qaBandToImage)
+
+        pctOutOfRange = expanded.select("outOfRange").count()\
+            .divide(countImg).rename("pctOutOfRange")
+        pctPoorQuality = expanded.select("poorQuality").count()\
+            .divide(countImg).rename("pctPoorQuality")
+        pctClouds = expanded.select("clouds").count()\
+            .divide(countImg).rename("pctClouds")
+        pctShadows = expanded.select("shadows").count()\
+            .divide(countImg).rename("pctShadows")
+        pctSnow = expanded.select("snow").count()\
+            .divide(countImg).rename("pctSnow")
+        pctSensorZ = expanded.select("sensorZenith").count()\
+            .divide(countImg).rename("pctSensorZ")
+        pctSolarZ = expanded.select("solarZenith").count()\
+            .divide(countImg).rename("pctSolarZ")
+
+        qaPct = ee.Image.cat([pctOutOfRange,
+                             pctPoorQuality,
+                             pctClouds,
+                             pctShadows,
+                             pctSnow,
+                             pctSensorZ,
+                             pctSolarZ
+                             ])
+
+        pctClear = ee.Image(1).subtract(qaPct.reduce(ee.Reducer.sum()))\
+            .rename("pctClear")
+
+        return qaPct.addBands(pctClear)
+
+
+class Rendvi:
     def __init__(self, ic, band, seed=0):
         self.IC = ic
         self.BAND = band
@@ -95,11 +134,21 @@ class Processing:
                 t1 = idxArr.get([0])  # get start of dekad
                 t2 = idxArr.get([1])  # end of dekad
                 date = y1.advance(ee.Number(t1).subtract(1), 'day')
+
                 dekadModis = yrModis.filter(ee.Filter.calendarRange(t1, t2, 'day_of_year'))\
-                    .select(self.BAND)
+
                 composite = dekadModis.qualityMosaic(self.BAND).set(
                     'system:time_start', date.millis(), 'begin', ee.Number(t1))
-                result = ee.Algorithms.If(composite, composite, None)
+
+                nClearObs = dekadModis.select(self.BAND).count()\
+                    .rename("nClearObs")
+
+                qaComposite = Utils.reduceQaToImages(dekadModis, qaBand="qa")
+
+                result = ee.Algorithms.If(composite,
+                                          composite.addBands(
+                                              qaComposite).addBands(nClearObs),
+                                          None)
                 return result
 
             # create date objects to filter
@@ -119,7 +168,7 @@ class Processing:
         dekads = ee.ImageCollection.fromImages(
             x.map(Utils.validImage, True).toList(x.size()))
 
-        return Processing(dekads, self.BAND, self.SEED)
+        return Rendvi(dekads, self.BAND, self.SEED)
 
     def getDates(self):
         return ee.List(self.IC.aggregate_array('system:time_start'))
@@ -200,7 +249,7 @@ class Processing:
 
         despiked = ee.ImageCollection(dates.slice(3, -3).map(_despike))
 
-        return Processing(despiked, self.BAND, self.SEED)
+        return Rendvi(despiked, self.BAND, self.SEED)
 
     def climatologyBackFill(self, climatology, nPeriods=5, step=10):
         def findClimoDate(img):
@@ -242,7 +291,7 @@ class Processing:
         nDays = ((nPeriods * 10) + 5) * -1
         filledDekads = self.IC.map(_backFill).map(Utils.addTimeBand)
 
-        return Processing(filledDekads, self.BAND, self.SEED)
+        return Rendvi(filledDekads, self.BAND, self.SEED)
 
     def applySmoothing(self, window=30, step=10, maxStack=6):
         # Function to smooth the despiked dekad time series
@@ -276,4 +325,4 @@ class Processing:
 
         smoothed = ee.ImageCollection(dates.slice(3, -3).map(_reduceFits))
 
-        return Processing(smoothed, self.BAND, self.SEED)
+        return Rendvi(smoothed, self.BAND, self.SEED)
