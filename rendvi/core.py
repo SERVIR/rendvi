@@ -69,43 +69,27 @@ class Utils:
     @staticmethod
     def validImage(img):
         nBands = ee.Number(img.bandNames().length())
-        out = ee.Algorithms.If(nBands.gt(0), img, ee.Image())
-        return ee.Image(out).copyProperties(img, ['system:time_start'])
+        out = ee.Algorithms.If(nBands.gt(0), img.copyProperties(img, ['system:time_start']), None)
+        return out
 
     @staticmethod
-    def reduceQaToImages(coll, qaBand=None):
+    def reduceQaToImages(coll, qaBand=None, renameBands=None):
         if qaBand:
             coll = coll.select(qaBand)
 
         countImg = coll.map(lambda img: img.unmask(1)).count()
 
-        expanded = coll.map(Masking.qaBandToImage)
+        expanded = coll.map(Masking.qaFlagsToBands)
 
-        pctOutOfRange = expanded.select("outOfRange").count()\
-            .divide(countImg).rename("pctOutOfRange")
-        pctPoorQuality = expanded.select("poorQuality").count()\
-            .divide(countImg).rename("pctPoorQuality")
-        pctClouds = expanded.select("clouds").count()\
-            .divide(countImg).rename("pctClouds")
-        pctShadows = expanded.select("shadows").count()\
-            .divide(countImg).rename("pctShadows")
-        pctSnow = expanded.select("snow").count()\
-            .divide(countImg).rename("pctSnow")
-        pctSensorZ = expanded.select("sensorZenith").count()\
-            .divide(countImg).rename("pctSensorZ")
-        pctSolarZ = expanded.select("solarZenith").count()\
-            .divide(countImg).rename("pctSolarZ")
+        qaPct = expanded.reduce(ee.Reducer.count()).divide(countImg)
 
-        qaPct = ee.Image.cat([pctOutOfRange,
-                             pctPoorQuality,
-                             pctClouds,
-                             pctShadows,
-                             pctSnow,
-                             pctSensorZ,
-                             pctSolarZ
-                             ])
+        if renameBands:
+            qaPct = qaPct.rename(renameBands)
 
-        pctClear = ee.Image(1).subtract(qaPct.reduce(ee.Reducer.sum()))\
+        pctClear = ee.Image(ee.Algorithms.If(qaPct.bandNames().size().gt(0),
+                                             ee.Image(1).subtract(
+                                                 qaPct.reduce(ee.Reducer.sum())),
+                                             ee.Image(0)))\
             .rename("pctClear")
 
         return qaPct.addBands(pctClear)
@@ -125,7 +109,11 @@ class Rendvi:
     def imageCollection(self):
         return self.IC
 
-    def getDekadImages(self, years):
+    @property
+    def dates(self):
+        return self.getDates().getInfo()
+
+    def getDekadImages(self, years, includeQa=True):
         # loop functions to calculate dekads from daily data
         def yrLoop(yr):
             # loop over each dekad within year
@@ -137,18 +125,24 @@ class Rendvi:
 
                 dekadModis = yrModis.filter(ee.Filter.calendarRange(t1, t2, 'day_of_year'))\
 
-                composite = dekadModis.qualityMosaic(self.BAND).set(
-                    'system:time_start', date.millis(), 'begin', ee.Number(t1))
+                composite = dekadModis.select(self.BAND).qualityMosaic(self.BAND)\
+                    .rename(self.BAND).set('system:time_start', date.millis(), 'begin', ee.Number(t1))
 
-                nClearObs = dekadModis.select(self.BAND).count()\
-                    .rename("nClearObs")
+                if includeQa:
+                    nClearObs = dekadModis.select(self.BAND).count()\
+                        .rename("nClearObs")
 
-                qaComposite = Utils.reduceQaToImages(dekadModis, qaBand="qa")
+                    qaComposite = Utils.reduceQaToImages(dekadModis, qaBand="qa",
+                                                         renameBands=["pctOutOfRange", "pctPoorQuality", "pctClouds", "pctShadows", "pctSnow", "pctSensorZ", "pctSolarZ"])
 
-                result = ee.Algorithms.If(composite,
-                                          composite.addBands(
-                                              qaComposite).addBands(nClearObs),
-                                          None)
+                    result = ee.Algorithms.If(composite,
+                                              composite.addBands(
+                                                  qaComposite).addBands(nClearObs),
+                                              None)
+                else:
+                    result = ee.Algorithms.If(composite,
+                                              composite,
+                                              None)
                 return result
 
             # create date objects to filter
@@ -165,8 +159,10 @@ class Rendvi:
             return thisDekad.map(dkLoop)
 
         x = ee.ImageCollection(years.map(yrLoop).flatten())
-        dekads = ee.ImageCollection.fromImages(
-            x.map(Utils.validImage, True).toList(x.size()))
+        # dekads = ee.ImageCollection.fromImages(
+        #     x.map(Utils.validImage, True).toList(x.size()))
+
+        dekads = x.map(Utils.validImage,True)
 
         return Rendvi(dekads, self.BAND, self.SEED)
 
@@ -195,7 +191,7 @@ class Rendvi:
 
         return dekadClimo
 
-    def applyDespike(self, window=30, step=10,):
+    def applyDespike(self, window=30, step=10, offset=1, diffThresh=0.2, timeUnits="day"):
         def _despike(d):
             d = ee.Date(d)
 
@@ -204,9 +200,9 @@ class Rendvi:
 
             # var b
             tempFore = ee.ImageCollection(self.IC.filterDate(
-                d.advance(-(window - 1), 'day'), d.advance(-(step - 1), 'day')))
+                d.advance(-(window - offset), timeUnits), d.advance(-(step - offset), timeUnits)))
             tempAft = ee.ImageCollection(self.IC.filterDate(
-                d.advance((step + 1), 'day'), d.advance((window + 1), 'day')))
+                d.advance((step + offset), timeUnits), d.advance((window + offset), timeUnits)))
 
             tempMax = ee.ImageCollection(tempFore.merge(tempAft)).max()
             tempMax = ee.Image(ee.Algorithms.If(
@@ -214,13 +210,13 @@ class Rendvi:
 
             # var c
             tm1 = ee.Image(self.IC.filterDate(
-                d.advance(-(step - 1), 'day'), d.advance(-1, 'day')).first())
+                d.advance(-(step - offset), timeUnits), d.advance(-offset, timeUnits)).first())
             # var a
             t = ee.Image(self.IC.filterDate(
-                d.advance(-1, 'day'), d.advance(1, 'day')).first())
+                d.advance(-offset, timeUnits), d.advance(offset, timeUnits)).first())
             # var d
             tp1 = ee.Image(self.IC.filterDate(
-                d.advance(1, 'day'), d.advance((step + 1), 'day')).first())
+                d.advance(offset, timeUnits), d.advance((step + offset), timeUnits)).first())
 
             tm1 = ee.Image(ee.Algorithms.If(tm1, tm1, random))
             t = ee.Image(ee.Algorithms.If(t, t, random))
@@ -233,25 +229,29 @@ class Rendvi:
             # var Bn
             Bn = tempMax.multiply(1.1)
 
-            test = pDiff.lte(0.2).Or(mDiff.lte(0.2))
+            iniMask = pDiff.lte(diffThresh).Or(mDiff.lte(diffThresh))
 
-            out = t.updateMask(test)
-            lastMask = t.lt(Bn)
+            out = t.updateMask(iniMask)
+            despikeMask = t.lt(Bn).rename("depiked")
 
             time = Utils.timeBand(d)
 
-            out = out.updateMask(lastMask)\
-                .rename(self.BAND)\
-                .addBands(time)
+            out = out.updateMask(despikeMask)\
+                .addBands(time)\
+                .addBands(despikeMask.Not())
+
             return out
 
         dates = self.getDates()
 
-        despiked = ee.ImageCollection(dates.slice(3, -3).map(_despike))
+        include = window // step
+
+        despiked = ee.ImageCollection(
+            dates.slice(include, -include).map(_despike))
 
         return Rendvi(despiked, self.BAND, self.SEED)
 
-    def climatologyBackFill(self, climatology, nPeriods=5, step=10):
+    def climatologyBackFill(self, climatology, nPeriods=5, step=10, keepBandPattern="^(pct|nClear).*"):
         def findClimoDate(img):
             t = ee.Date(img.get('system:time_start'))
             yr = ee.Number(t.get('year'))
@@ -293,7 +293,7 @@ class Rendvi:
 
         return Rendvi(filledDekads, self.BAND, self.SEED)
 
-    def applySmoothing(self, window=30, step=10, maxStack=6):
+    def applySmoothing(self, window=30, step=10, maxStack=6, offset=1, timeUnits="day"):
         # Function to smooth the despiked dekad time series
         def _smooth(d):
             def applyFit(img):
@@ -302,27 +302,29 @@ class Rendvi:
 
             d = ee.Date(d)
 
-            window = self.IC.filterDate(
-                d.advance(-(offset - 1), 'day'), d.advance((offset + 1), 'day'))
+            windowIc = self.IC.filterDate(
+                d.advance(-(windowRange - offset), timeUnits), d.advance((windowRange + offset), timeUnits))
 
-            fit = window.select(['time', self.BAND])\
+            fit = windowIc.select(['time', self.BAND])\
                 .reduce(ee.Reducer.linearFit())
 
-            out = window.map(applyFit).toList(maxStack)
+            out = windowIc.map(applyFit).toList(maxStack)
 
             return out
 
         def _reduceFits(d):
             d = ee.Date(d)
-            return fitted.filterDate(d.advance(-1, 'day'), d.advance(1, 'day'))\
+            return fitted.filterDate(d.advance(-offset, timeUnits), d.advance(offset, timeUnits))\
                 .mean().set('system:time_start', d).rename(self.BAND)
 
-        offset = window // 2
+        windowRange = window // 2
+        include = window // step
         dates = self.getDates()
 
-        windowFits = dates.slice(3, -3).map(_smooth)
+        windowFits = dates.slice(include, -include).map(_smooth)
         fitted = ee.ImageCollection(windowFits.flatten())
 
-        smoothed = ee.ImageCollection(dates.slice(3, -3).map(_reduceFits))
+        smoothed = ee.ImageCollection(
+            dates.slice(include, -include).map(_reduceFits))
 
         return Rendvi(smoothed, self.BAND, self.SEED)
