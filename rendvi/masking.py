@@ -84,14 +84,14 @@ class Masking:
         return
 
     @staticmethod
-    def qaBandToImage(img):
-        outOfRange = img.eq(2).updateMask(img.eq(2)).rename("outOfRange")
-        poorQuality = img.eq(3).updateMask(img.eq(3)).rename("poorQuality")
-        clouds = img.eq(4).updateMask(img.eq(4)).rename("clouds")
-        shadows = img.eq(5).updateMask(img.eq(5)).rename("shadows")
-        snow = img.eq(6).updateMask(img.eq(6)).rename("snow")
-        sensorZenith = img.eq(7).updateMask(img.eq(7)).rename("sensorZenith")
-        solarZenith = img.eq(8).updateMask(img.eq(8)).rename("solarZenith")
+    def qaFlagsToBands(img):
+        outOfRange = img.eq(2).updateMask(img.eq(2)).rename("qaOutOfRange")
+        poorQuality = img.eq(3).updateMask(img.eq(3)).rename("qaPoorQuality")
+        clouds = img.eq(4).updateMask(img.eq(4)).rename("qaClouds")
+        shadows = img.eq(5).updateMask(img.eq(5)).rename("qaShadows")
+        snow = img.eq(6).updateMask(img.eq(6)).rename("qaSnow")
+        sensorZenith = img.eq(7).updateMask(img.eq(7)).rename("qaSensorZenith")
+        solarZenith = img.eq(8).updateMask(img.eq(8)).rename("qaSolarZenith")
 
         return ee.Image.cat([outOfRange,
                              poorQuality,
