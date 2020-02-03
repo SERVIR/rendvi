@@ -45,6 +45,8 @@ RUN cd /home/jovyan/ \
   && cd rendvi \
   && pip install .
 
+RUN cd ~/
+
 USER $NB_UID
 
 #ENTRYPOINT ["cd /home/ && jupyter lab --ip=0.0.0.0 --allow-root"]
