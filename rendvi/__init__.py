@@ -7,8 +7,12 @@ import datetime
 from rendvi.core import *
 from rendvi.masking import *
 from rendvi.smoothing import *
-from rendvi import collections
+from rendvi import eeCollections
 
+# try:
+#     ee.Initialize()
+# except Exception as e:
+#     x = None
 
 
 def exportImage(image, region, assetId, description=None, scale=1000, crs='EPSG:4326', pyramiding=None):
@@ -38,10 +42,11 @@ def exportImage(image, region, assetId, description=None, scale=1000, crs='EPSG:
 
 
 def batchExport(collection, region, collectionAsset, prefix=None, suffix=None, scale=1000, crs='EPSG:4326', metadata=None, pyramiding=None):
-    n = collection.size().getInfo()
+    n = collection.size()
     exportImages = collection.sort('system:time_start', False).toList(n)
+    nIter = n.getInfo()
 
-    for i in range(n):
+    for i in range(nIter):
         img = ee.Image(exportImages.get(i))
         if metadata is not None:
             img = img.set(metadata)
@@ -52,17 +57,17 @@ def batchExport(collection, region, collectionAsset, prefix=None, suffix=None, s
 
         exportName = date
         if prefix is not None:
-            exportName = prefix + exportName
+            exportName = f"{prefix}_" + exportName
         if suffix is not None:
-            exportName = exportName + suffix
+            exportName = exportName + f"_{suffix}"
 
         description = exportName
-        print("running export for {}".format(description))
+        print(f"running export for {description}")
 
         if not collectionAsset.endswith('/'):
             collectionAsset += '/'
 
-        exportName = collectionAsset + description
+        exportName=collectionAsset + description
 
         exportImage(img, region, exportName, description=description,
                     scale=scale, crs=crs, pyramiding=pyramiding)
