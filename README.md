@@ -11,14 +11,27 @@ Optional:
 * [ipyleaflet](https://ipyleaflet.readthedocs.io/en/latest/)
 
 ## Setup
-The setup commands assume you do not have the necessary packages installed.
+The easiest way to install the package and get it ready to run is by using [Docker](https://www.docker.com/products/docker-desktop). If you have Docker installed and running, use the following commands to pull and install a pre-made container.
 
-Using `pip`:
 ```
-pip install earthengine-api
-pip install fire
-pip install git+git://github.com/servir/rendvi.git
+$ docker pull kmarkert/rendvi
 ```
 
-## Examples
-Coming soon...
+If you would like to install the required packages as a Python virtual environment using `conda`, run the following command to install and activate the environment to begin using it:
+
+```
+$ conda create --name rendvi --file environent.txt
+$ conda activate rendvi
+```
+
+## Getting started
+Assuming that you are using the docker image, this Python package comes with a command line interface to quickly execute canned processes and run the a Jupyter Lab server to interactively run code.
+
+#### Starting the Jupyter server
+```
+$ docker run -p 8888:8888 kmarkert/rendvi jupyter lab --ip=0.0.0.0 --allow-root
+```
+
+#### Kicking off a process
+```
+$ docker run kmarkert/rendvi rendvi export
