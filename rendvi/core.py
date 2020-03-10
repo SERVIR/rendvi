@@ -7,7 +7,10 @@ class Utils:
     @staticmethod
     def addNDBand(coll, b1=None, b2=None, outName=None):
         def _addND(image):
-            nd = image.normalizedDifference([b1, b2])
+            nd = image.expression('(b1-b2)/(b1+b2+1e-7)',{
+                'b1':image.select(b1),
+                'b2':image.select(b2)
+            })
             if outName is not None:
                 nd = nd.rename([outName])
             return image.addBands(nd)
@@ -28,20 +31,20 @@ class Utils:
             "ndvi": img.select("ndvi")
         }).rename('ndvi')
         inRange = ndvi.gte(-1).And(ndvi.lte(1))
-        return ndvi.updateMask(inRange).set('system:time_start', img.get('system:time_start'))
+        return ndvi.updateMask(inRange).set('system:time_start', img.date().millis())
 
     # Function to rescale NDVI values from -1-1to 0-200
     @staticmethod
     def scaleNdvi(img):
         date = ee.Date(img.get('system:time_start'))
         out = img.select(['ndvi']).add(1).multiply(100).uint8()\
-            .rename(['ndvi']).set('system:time_start', img.get('system:time_start'))
+            .rename(['ndvi']).set('system:time_start', img.date().millis())
 
         return ee.Image(out)
 
     @staticmethod
     def timeBand(date):
-        return ee.Image(date.millis().divide(1e18)).float().rename('time')
+        return ee.Image(date.millis().divide(1e18)).float().rename('t')
 
     @staticmethod
     def addTimeBand(img):
@@ -69,7 +72,7 @@ class Utils:
     @staticmethod
     def validImage(img):
         nBands = ee.Number(img.bandNames().length())
-        out = ee.Algorithms.If(nBands.gt(0), img.copyProperties(img, ['system:time_start']), None)
+        out = ee.Algorithms.If(nBands.gt(2), img.copyProperties(img, ['system:time_start']), None)
         return out
 
     @staticmethod
@@ -111,7 +114,7 @@ class Rendvi:
 
     @property
     def dates(self):
-        return self.getDates().getInfo()
+        return self.getDates().map(lambda x: ee.Date(x).format("YYYY-MM-dd")).getInfo()
 
     def getDekadImages(self, years, includeQa=True):
         # loop functions to calculate dekads from daily data
@@ -163,8 +166,9 @@ class Rendvi:
         #     x.map(Utils.validImage, True).toList(x.size()))
 
         dekads = x.map(Utils.validImage,True)
+        dekadIc = ee.ImageCollection.fromImages(dekads.toList(dekads.size()))
 
-        return Rendvi(dekads, self.BAND, self.SEED)
+        return Rendvi(dekadIc, self.BAND, self.SEED)
 
     def getDates(self):
         return ee.List(self.IC.aggregate_array('system:time_start'))
@@ -175,9 +179,9 @@ class Rendvi:
             dummyT = ee.Date.fromYMD(2001, 1, 1)
             climoColl = self.IC.select(self.BAND).filter(
                 ee.Filter.dayOfYear(i, i.add(5)))
-            count = climoColl.count().rename('count').multiply(10000).uint16()
+            count = climoColl.count().rename('count').multiply(1000).uint16()
             climo = climoColl.reduce(reducers).multiply(
-                10000).uint16()  # .updateMask(count.gt(7));
+                10000).int16()  # .updateMask(count.gt(7));
             properties = {'system:time_start': dummyT.advance(i.subtract(1), 'day').millis(),
                           'dekad': i}
             return climo.addBands(count).set(properties)
@@ -191,7 +195,7 @@ class Rendvi:
 
         return dekadClimo
 
-    def applyDespike(self, window=30, step=10, offset=1, diffThresh=0.2, timeUnits="day"):
+    def applyDespike(self, window=30, step=10, offset=1, diffThresh=0.2, timeUnits="day",keepBandPattern="^(pct|nClear).*"):
         def _despike(d):
             d = ee.Date(d)
 
@@ -223,22 +227,25 @@ class Rendvi:
             tp1 = ee.Image(ee.Algorithms.If(tp1, tp1, random))
 
             # var ac
-            mDiff = t.subtract(tm1).abs()
+            mDiff = t.subtract(tm1).divide(tm1).abs() # percent difference t-1 to t0
             # var ad
-            pDiff = tp1.subtract(t).abs()
+            pDiff = tp1.subtract(t).divide(t).abs() # percent difference t0 to t1
             # var Bn
             Bn = tempMax.multiply(1.1)
 
             iniMask = pDiff.lte(diffThresh).Or(mDiff.lte(diffThresh))
+            despikeMask = t.select(self.BAND).lt(Bn.select(self.BAND)).rename("despiked")
 
-            out = t.updateMask(iniMask)
-            despikeMask = t.lt(Bn).rename("depiked")
+            maskedOut = t.select(self.BAND).updateMask(despikeMask)
 
             time = Utils.timeBand(d)
 
-            out = out.updateMask(despikeMask)\
-                .addBands(time)\
-                .addBands(despikeMask.Not())
+            out = ee.Image.cat([
+                maskedOut,
+                time,
+                despikeMask.Not().unmask(0),
+                t.select(keepBandPattern)
+            ])
 
             return out
 
@@ -264,6 +271,7 @@ class Rendvi:
 
         def getPrevious(img):
             climo = findClimoDate(img)
+            climo = climo.multiply(0.0001).updateMask(climo.select("count").gt(0.6))
 
             z = img.select(self.BAND).subtract(climo.select('.*mean'))\
                 .divide(climo.select('.*stdDev'))
@@ -272,7 +280,7 @@ class Rendvi:
         def _backFill(img):
             t = ee.Date(img.get('system:time_start'))
 
-            climo = findClimoDate(img)
+            climo = findClimoDate(img).multiply(0.0001).float()
 
             previous = self.IC.filterDate(
                 t.advance(nDays, 'day'), t.advance(-1, 'day')).map(getPrevious).mean()
@@ -285,27 +293,51 @@ class Rendvi:
             fillVal = climo.select('.*mean').add(zScore.select('zScore').multiply(climo.select('.*stdDev')))\
                 .rename(self.BAND)
 
-            out = img.select(self.BAND).unmask(fillVal)
+            keepBands = img.select(keepBandPattern)
+            fillMask = img.select(self.BAND).mask().Not().And(fillVal.mask()).unmask(0).rename("climatologyFilled")
+
+            out = ee.Image.cat([
+                img.select(self.BAND).unmask(fillVal),
+                keepBands,
+                fillMask
+            ])
+
             return out
 
-        nDays = ((nPeriods * 10) + 5) * -1
+        nDays = ((nPeriods * step) + 5) * -1
         filledDekads = self.IC.map(_backFill).map(Utils.addTimeBand)
 
         return Rendvi(filledDekads, self.BAND, self.SEED)
 
-    def applySmoothing(self, window=30, step=10, maxStack=6, offset=1, timeUnits="day"):
+    def spatialSmoothing(self,kernel,zThreshold=1,constraintBand='^clima.*',keepBandPattern="^(pct|nClear).*"):
+        def _smooth(image):
+            valueImage = image.select(self.BAND)
+            reduced = valueImage.reduceNeighborhood(reducers,kernel)
+            outside = valueImage.subtract(reduced.select('.*(mean)$')).divide(reduced.select('.*(stdDev)$')).abs()
+            toFill = outside.lt(zThreshold).Or(image.select(constraintBand).Not()).rename('spatialSmoothed')
+            masked = valueImage.updateMask(toFill)
+            smoothed = masked.unmask(reduced.select('.*(mean)$'))
+            out = ee.Image.cat([smoothed,image.select(keepBandPattern)],toFill.Not())
+            return out
+
+        reducers = ee.Reducer.mean().combine(ee.Reducer.stdDev(),'',True)
+        smoothedColl = self.IC.map(_smooth)
+
+        return Rendvi(smoothedColl, self.BAND, self.SEED)
+
+    def applySmoothing(self, window=30, step=10, maxStack=6, offset=1, timeUnits="day",keepBandPattern="^(pct|nClear).*"):
         # Function to smooth the despiked dekad time series
         def _smooth(d):
             def applyFit(img):
-                return img.select('time').multiply(fit.select('scale')).add(fit.select('offset'))\
-                    .set('system:time_start', img.get('system:time_start')).rename(self.BAND)
+                return img.select('t').multiply(fit.select('scale')).add(fit.select('offset'))\
+                    .set('system:time_start', img.date().millis()).rename(self.BAND)
 
             d = ee.Date(d)
 
             windowIc = self.IC.filterDate(
                 d.advance(-(windowRange - offset), timeUnits), d.advance((windowRange + offset), timeUnits))
 
-            fit = windowIc.select(['time', self.BAND])\
+            fit = windowIc.select(['t', self.BAND])\
                 .reduce(ee.Reducer.linearFit())
 
             out = windowIc.map(applyFit).toList(maxStack)
@@ -314,8 +346,20 @@ class Rendvi:
 
         def _reduceFits(d):
             d = ee.Date(d)
-            return fitted.filterDate(d.advance(-offset, timeUnits), d.advance(offset, timeUnits))\
-                .mean().set('system:time_start', d).rename(self.BAND)
+            tImg = ee.Image(self.IC.filterDate(d.advance(-step//2, timeUnits), d.advance(step//2, timeUnits)).first())
+            keepBands = tImg.select(keepBandPattern)
+
+            reducedLine = fitted.filterDate(d.advance(-offset, timeUnits), d.advance(offset, timeUnits))\
+                .median().set('system:time_start', d.millis()).rename(self.BAND)
+
+            smoothedMask = tImg.select(self.BAND).mask().Not().And(reducedLine.mask()).unmask(0).rename("temporalFilled")
+
+            out = ee.Image.cat([
+                reducedLine,
+                keepBands,
+                smoothedMask
+            ])
+            return out
 
         windowRange = window // 2
         include = window // step
