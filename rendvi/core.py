@@ -1,4 +1,5 @@
 import ee
+import pandas as pd
 from rendvi.masking import Masking
 
 
@@ -51,6 +52,11 @@ class Utils:
         d = img.date()
         timeBand = Utils.timeBand(d)
         return img.addBands(timeBand)
+
+    @staticmethod
+    def addConstantBand(img):
+        constBand = ee.Image(1)
+        return img.addBands(constBand)
 
     @property
     def perpetualDekads():
@@ -116,6 +122,9 @@ class Rendvi:
     def dates(self):
         return self.getDates().map(lambda x: ee.Date(x).format("YYYY-MM-dd")).getInfo()
 
+    def getDates(self):
+        return ee.List(self.IC.aggregate_array('system:time_start'))
+
     def getDekadImages(self, years, includeQa=True):
         # loop functions to calculate dekads from daily data
         def yrLoop(yr):
@@ -169,9 +178,6 @@ class Rendvi:
         dekadIc = ee.ImageCollection.fromImages(dekads.toList(dekads.size()))
 
         return Rendvi(dekadIc, self.BAND, self.SEED)
-
-    def getDates(self):
-        return ee.List(self.IC.aggregate_array('system:time_start'))
 
     def calcClimatology(self):
         def _dekadsToClimo(i):
@@ -372,3 +378,12 @@ class Rendvi:
             dates.slice(include, -include).map(_reduceFits))
 
         return Rendvi(smoothed, self.BAND, self.SEED)
+
+
+    def getTimeSeries(self,region,scale,start=False,end=False):
+        result = self.imageCollection.getRegion(region,scale).getInfo()
+        df = pd.DataFrame(result[1:])
+        df.columns = result[0]
+        df["date"]= pd.to_datetime([t['value']*1e6 if type(t)==dict else t*1e6 for t in df["time"]] )
+        df.index = df.date
+        return df
