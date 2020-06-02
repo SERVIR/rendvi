@@ -7,18 +7,25 @@ from rendvi.core import Utils, Rendvi
 
 class ForecastModel:
     def __init__(self):
+        # set the constant and time independent variables for any regression.
+        self.independents = ee.List(['constant', 'time'])
         return
 
     def _prepInputs(self, collection):
         first = ee.Image(collection.IC.first())
         bands = first.bandNames().getInfo()
         outCollection = copy.deepcopy(collection.imageCollection)
-        if 't' not in bands:
-            outCollection = outCollection.map(Utils.addTimeBand)
+        if 'time' not in bands:
+            outCollection = outCollection.map(lambda x:
+                x.addBands(
+                    ee.Image(x.date().difference(ee.Date('1970-01-01'),'year')).float().rename('time')
+                )
+            )
         if 'constant' not in bands:
             outCollection = outCollection.map(Utils.addConstantBand)
 
         return Rendvi(outCollection, collection.BAND, collection.SEED)
+
 
     def detrend(self, collection):
         @retainTime
@@ -34,7 +41,10 @@ class ForecastModel:
         #  Compute a linear trend.  This will have two bands: 'residuals' and
         # a 2x1 band called coefficients (columns are for dependent variables).
         trend = inputs.IC.select(self.independents.add(dependent))\
-            .reduce(ee.Reducer.linearRegression(self.independents.length(), 1))
+            .reduce(ee.Reducer.linearRegression(
+                numX=self.independents.length(),
+                numY=1
+            ))
 
         # Flatten the coefficients into a 2-band image
         coefficients = trend.select('coefficients')\
@@ -47,25 +57,40 @@ class ForecastModel:
 
 
 class Harmonics(ForecastModel):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, nCycles=3,**kwargs):
         super(Harmonics, self).__init__(*args, **kwargs)
 
-        # Use the constant and time independent variables in the harmonic regression.
-        self.independents = ee.List(['constant', 't'])
+        self.cycles = nCycles
+        self.frequencyImg = ee.Image.constant(ee.List.sequence(1, nCycles))
+
+        # Construct lists of names for the harmonic terms.
+        self.cosNames = self._getNames('cos', self.cycles)
+        self.sinNames = self._getNames('sin', self.cycles)
+
         # add in two more independent variables: sine and cosine
-        self.harmonicIndependents = self.independents.cat(
-            ee.List(['cos', 'sin']))
+        self.harmonicIndependents = self.independents\
+            .cat(self.cosNames).cat(self.sinNames)
+
         # empty object to apply the computed harmonic coefficients to
         # need to apply fit
         self.harmonicCoefficients = None
 
         return
 
+    # Function to get a sequence of band names for harmonic terms.
+    def _getNames(self, base, n):
+        return ee.List([f'{base}_{i:02d}' for i in range(n)])
+
     def _addHarmonicCoefs(self, image):
-        timeRadians = image.select('t').multiply(2 * math.pi)
+        timeRadians = image.select('time').multiply(2 * math.pi)
+        cosines = timeRadians.multiply(self.frequencyImg).cos()\
+            .rename(self.cosNames)
+        sines = timeRadians.multiply(self.frequencyImg).sin()\
+            .rename(self.sinNames)
+
         return image\
-            .addBands(timeRadians.cos().rename('cos'))\
-            .addBands(timeRadians.sin().rename('sin'))
+            .addBands(cosines)\
+            .addBands(sines)
 
     def fit(self, collection):
         dependent = ee.String(collection.BAND)
@@ -109,7 +134,7 @@ class Harmonics(ForecastModel):
         # Compute fitted values.
         predictedHarmonic = harmonicCollection.map(_applyPrediction)
 
-        return Rendvi(predictedHarmonic, collection.BAND, collection.SEED)
+        return Rendvi(predictedHarmonic, 'predicted', collection.SEED)
 
 
 class AutoRegressive(ForecastModel):
