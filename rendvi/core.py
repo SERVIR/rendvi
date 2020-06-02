@@ -43,14 +43,11 @@ class Utils:
 
         return ee.Image(out)
 
-    @staticmethod
-    def timeBand(date):
-        return ee.Image(date.millis().divide(1e18)).float().rename('t')
 
     @staticmethod
     def addTimeBand(img):
         d = img.date()
-        timeBand = Utils.timeBand(d)
+        timeBand = ee.Image(d.millis().divide(1e18)).float().rename('t')
         return img.addBands(timeBand)
 
     @staticmethod
