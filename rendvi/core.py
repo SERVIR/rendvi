@@ -43,12 +43,14 @@ class Utils:
 
         return ee.Image(out)
 
+    @staticmethod
+    def timeBand(d):
+        return ee.Image(d.millis().divide(1e18)).float().rename('t')
 
     @staticmethod
     def addTimeBand(img):
         d = img.date()
-        timeBand = ee.Image(d.millis().divide(1e18)).float().rename('t')
-        return img.addBands(timeBand)
+        return img.addBands(Utils.timeBand(d))
 
     @staticmethod
     def addConstantBand(img):
@@ -265,8 +267,10 @@ class Rendvi:
                 maskedOut,
                 time,
                 despikeMask.Not().unmask(0),
-                t.select(keepBandPattern)
             ])
+            
+            if keepBandPattern is not None:
+                out = out.addBands(t.select(keepBandPattern))
 
             return out
 
