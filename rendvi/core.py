@@ -75,6 +75,12 @@ class Utils:
     @staticmethod
     def validImage(img):
         nBands = ee.Number(img.bandNames().length())
+        out = ee.Algorithms.If(nBands.gt(0), img.copyProperties(img, ['system:time_start']), None)
+        return out
+
+    @staticmethod
+    def validQaImage(img):
+        nBands = ee.Number(img.bandNames().length())
         out = ee.Algorithms.If(nBands.gt(2), img.copyProperties(img, ['system:time_start']), None)
         return out
 
@@ -102,9 +108,15 @@ class Utils:
 
 
 class Rendvi:
-    def __init__(self, ic, band, seed=0):
+    def __init__(self, ic, band=None, seed=0):
         self.IC = ic
-        self.BAND = band
+
+        if band is None:
+            bandList = ee.Image(ic.first()).bandNames().getInfo()
+            self.BAND = bandList[0]
+        else:
+            self.BAND = band
+
         self.SEED = seed
         return
 
@@ -122,7 +134,7 @@ class Rendvi:
     def getDates(self):
         return ee.List(self.IC.aggregate_array('system:time_start'))
 
-    def getDekadImages(self, years, includeQa=True):
+    def getDekadImages(self, includeQa=True):
         # loop functions to calculate dekads from daily data
         def yrLoop(yr):
             # loop over each dekad within year
@@ -167,11 +179,17 @@ class Rendvi:
 
             return thisDekad.map(dkLoop)
 
+        years = self.getDates().map(lambda x: ee.Date(x).get('year')).distinct()
+
         x = ee.ImageCollection(years.map(yrLoop).flatten())
         # dekads = ee.ImageCollection.fromImages(
         #     x.map(Utils.validImage, True).toList(x.size()))
 
-        dekads = x.map(Utils.validImage,True)
+        if includeQa:
+            dekads = x.map(Utils.validQaImage,True)
+        else:
+            dekads = x.map(Utils.validImage,True)
+
         dekadIc = ee.ImageCollection.fromImages(dekads.toList(dekads.size()))
 
         return Rendvi(dekadIc, self.BAND, self.SEED)
