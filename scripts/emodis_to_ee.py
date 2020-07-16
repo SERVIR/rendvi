@@ -58,7 +58,7 @@ def pull_emodis(working_dir: Path, dekad: int, year: int) -> str:
 
 def push_to_ee(file: Path, gcs_bucket: str, ee_collection: str, date: datetime.datetime) -> None:
     # first push the file to GCS
-    cmd = "gsutil cp {0}.* {1}".format(str(file.resolve().stem),gcs_bucket)
+    cmd = "gsutil cp {0} {1}".format(str(file.with_suffix(".*")),gcs_bucket)
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out, err = proc.communicate()
 
