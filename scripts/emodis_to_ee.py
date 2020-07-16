@@ -1,14 +1,8 @@
 import fire
-
 import requests
 import subprocess
-
 import datetime
-
 import asyncio
-# import aiohttp
-# import aiofiles
-import requests
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -106,7 +100,6 @@ def main(gcs_bucket: str, ee_collection: str, start_time: str="2000-01-01", end_
         for d in range(1,37):
             dekad_date = dekad_to_datetime(d,y)
             if dekad_date >= start_time and dekad_date <= end_time:
-                print(dekad_date)
                 tasks.append(pipeline(working_dir,gcs_bucket,ee_collection,d,y,verbose=verbose))
 
     loop = asyncio.new_event_loop()
