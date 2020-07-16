@@ -1,21 +1,16 @@
-FROM jupyter/scipy-notebook:latest
+FROM continuumio/miniconda3:latest
 
+# run install as root
 USER root
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    git \
-    && apt-get clean
-
-# Install the Earth Engine Python API.
-# (https://github.com/google/earthengine-api)
+ 
 RUN apt-get update \
 && apt-get install -y --no-install-recommends \
            build-essential \
            libssl-dev \
            libffi-dev \
-&& pip install cryptography \
-&& pip install earthengine-api \
+           git \ 
+           vim \
+           curl \
 && apt-get purge -y build-essential \
            libssl-dev \
            libffi-dev \
@@ -26,27 +21,33 @@ RUN apt-get update \
 && apt-get clean \
 && rm -rf /var/lib/apt/lists/*
 
-RUN conda install -c conda-forge --quiet --yes \
-  'earthengine-api' \
-  'ipyleaflet' \
-  'bqplot' \
-  && \
-  conda clean --all -f -y
+# install google cloud software development kit and support libraries
+# Downloading gcloud package
+RUN curl https://dl.google.com/dl/cloudsdk/release/google-cloud-sdk.tar.gz > /tmp/google-cloud-sdk.tar.gz
+
+# Installing the package
+RUN mkdir -p /usr/local/gcloud \
+  && tar -C /usr/local/gcloud -xvf /tmp/google-cloud-sdk.tar.gz \
+  && /usr/local/gcloud/google-cloud-sdk/install.sh
+
+# Adding the package path to local
+ENV PATH $PATH:/usr/local/gcloud/google-cloud-sdk/bin
+
+# update conda package and install other packages for processing
+RUN conda update -n base -c defaults conda --yes\
+  && conda install -c conda-forge --yes \
+    'earthengine-api' \
+    'fire' \
+    'requests' \
+    'pandas' \
+  && conda clean --all -f -y
 
 
-# enable jupyter lab extensions to work
-RUN pip install sidecar \
-  && jupyter labextension install @jupyter-widgets/jupyterlab-sidecar \
-  && jupyter labextension install jupyter-leaflet
-
-
-RUN cd /home/jovyan/ \
+# pull the rendvi github repo and install
+RUN mkdir /home/servir/ \
+  && cd /home/servir/ \
   && git clone https://github.com/servir/rendvi.git \
   && cd rendvi \
   && pip install .
 
 RUN cd ~/
-
-USER $NB_UID
-
-#ENTRYPOINT ["cd /home/ && jupyter lab --ip=0.0.0.0 --allow-root"]
