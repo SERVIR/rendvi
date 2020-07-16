@@ -1,3 +1,4 @@
+import os
 import fire
 import requests
 import subprocess
@@ -105,6 +106,13 @@ def main(gcs_bucket: str, ee_collection: str, start_time: str="2000-01-01", end_
     loop = asyncio.new_event_loop()
     done, _ = loop.run_until_complete(asyncio.wait(tasks))
     loop.close()
+
+    if cleanup:
+        files = os.listdir(working_dir)
+        for f in files:
+            trash = working_dir / f
+            if trash.suffix is not ".py":
+                os.remove(str(trash.resolve()))
 
     return
 
